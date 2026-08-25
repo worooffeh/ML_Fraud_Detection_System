@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+__pycache__/
+*.py[cod]
+notebooks/
+reports/
+visualizations/
+data/
+models/
+*.ipynb
+README.md

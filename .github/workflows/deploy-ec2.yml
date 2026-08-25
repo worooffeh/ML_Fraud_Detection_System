@@ -1,0 +1,119 @@
+name: Validate and deploy Nova Pay
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild images without using Docker cache
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: novapay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate application and deployment files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install API dependencies
+        run: python -m pip install --disable-pip-version-check -r service/requirements.txt
+
+      - name: Compile Python modules
+        run: python -m compileall -q service src
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build production images
+        run: docker compose build
+
+  deploy:
+    name: Deploy to EC2
+    needs: validate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: Trust deployment host
+        run: ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> "$HOME/.ssh/known_hosts"
+
+      - name: Create deployment archive
+        run: |
+          tar --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
+            -czf novapay-${GITHUB_SHA}.tar.gz \
+            Dockerfile Dockerfile.streamlit docker-compose.yml \
+            requirements.txt service src deploy
+
+      - name: Upload deployment archive
+        run: scp novapay-${GITHUB_SHA}.tar.gz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/"
+
+      - name: Activate release on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          RELEASE_SHA: ${{ github.sha }}
+          REBUILD: ${{ inputs.rebuild || 'false' }}
+        run: |
+          ssh "${EC2_USER}@${EC2_HOST}" "RELEASE_SHA='${RELEASE_SHA}' REBUILD='${REBUILD}' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          APP_ROOT=/home/${USER}/novapay
+          RELEASE_DIR="${APP_ROOT}/releases/${RELEASE_SHA}"
+          ARCHIVE="/tmp/novapay-${RELEASE_SHA}.tar.gz"
+
+          mkdir -p "${RELEASE_DIR}"
+          tar -xzf "${ARCHIVE}" -C "${RELEASE_DIR}"
+          ln -sfn "${RELEASE_DIR}" "${APP_ROOT}/current"
+          cd "${APP_ROOT}/current"
+
+          BUILD_FLAGS=""
+          if [ "${REBUILD}" = "true" ]; then BUILD_FLAGS="--no-cache"; fi
+          docker compose build ${BUILD_FLAGS}
+
+          sudo install -m 0644 deploy/nginx/ridewise.conf /etc/nginx/conf.d/novapay.conf
+          sudo install -m 0644 deploy/systemd/novapay-stack.service /etc/systemd/system/novapay-stack.service
+          sudo systemctl daemon-reload
+          sudo systemctl disable --now ridewise-api.service ridewise-streamlit.service 2>/dev/null || true
+          sudo systemctl enable novapay-stack.service
+          sudo systemctl restart novapay-stack.service
+          sudo nginx -t
+          sudo systemctl reload nginx
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/ready >/dev/null; then break; fi
+            if [ "${attempt}" = 30 ]; then
+              docker compose logs --tail=100
+              exit 1
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1/api/health >/dev/null
+          curl --fail --silent http://127.0.0.1/ >/dev/null
+          docker image prune --force
+          rm -f "${ARCHIVE}"
+          REMOTE

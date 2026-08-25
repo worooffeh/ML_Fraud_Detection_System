@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# Nova Pay — production API
+# ---------------------------------------------------------------------------
+# `docker compose up -d` starts the FastAPI backend and Streamlit dashboard.
+# Nginx (on the host) proxies to both. Both services are published only to
+# host loopback.
+#
+# This directly implements two hardening-checklist items at once:
+#   - "close ports 8000/8501 to the world"  (127.0.0.1 binding below)
+#   - "one canonical runtime story"          (this file is that story)
+# ---------------------------------------------------------------------------
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: novapay-api:1.0.0
+    container_name: novapay-api
+    # Publish to the HOST's loopback only. "127.0.0.1:8000:8000" means
+    # host-localhost:8000 -> container:8000, and NOT reachable from outside.
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/ready').status==200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    image: novapay-ui:1.0.0
+    container_name: novapay-ui
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "127.0.0.1:8501:8501"
+    restart: always
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
