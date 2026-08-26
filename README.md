@@ -6,7 +6,7 @@
 ---
 
 <p align="left">
-  <img src="reports/novapay_fraud_detection_interactive.png" width="750" alt="RideWise — Customer Analytics & Churn Prediction">
+  <img src="reports/NovaPay-image.png" width="750" alt="NovaPay — Fraud Detection">
 </p>
 
 ---
