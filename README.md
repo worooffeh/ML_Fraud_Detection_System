@@ -5,6 +5,11 @@
 
 ---
 
+<p align="left">
+  <img src="reports/novapay_fraud_detection_interactive.png" width="750" alt="RideWise — Customer Analytics & Churn Prediction">
+</p>
+
+---
 ## 🎯 Project Overview
 
 **Objective:** Develop real-time fraud detection system protecting payment transactions using machine learning, achieving industry-leading precision and recall.
